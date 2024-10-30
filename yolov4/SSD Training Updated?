@@ -1,0 +1,81 @@
+import os
+import torch
+from torchvision import models, transforms
+from torchvision.datasets import ImageFolder
+from torch.utils.data import DataLoader
+import cv2
+import numpy as np
+
+# Transformations for input images
+transform = transforms.Compose([
+    transforms.Resize((300, 300)),
+    transforms.ToTensor(),
+])
+
+# Load dataset from specified directory
+dataset = ImageFolder(root='path/to/dataset', transform=transform)
+dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+
+# Load pre-trained SSD model
+model = models.detection.ssdlite320_mobilenet_v3_large(pretrained=True)
+
+# Replace the classifier with a new one (adjust number of classes)
+num_classes = 256  # Adjust according to your dataset
+in_features = model.head.classification_head.conv[0].in_channels
+model.head.classification_head = torch.nn.Linear(in_features, num_classes)
+
+# Move model to the appropriate device
+device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+model.to(device)
+
+# Optimizer
+optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
+
+# Training loop
+num_epochs = 10  # Change number of epochs as needed
+for epoch in range(num_epochs):
+    model.train()
+    for images, targets in dataloader:
+        images = [image.to(device) for image in images]
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+        loss_dict = model(images, targets)
+        losses = sum(loss for loss in loss_dict.values())
+
+        optimizer.zero_grad()
+        losses.backward()
+        optimizer.step()
+
+    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {losses.item():.4f}")
+
+# After training, we can save the model if needed
+torch.save(model.state_dict(), 'ssd_model.pth')
+
+# Optionally, we can run inference on a few images from the dataset after training
+output_dir = 'output/'  # Directory to save output images
+os.makedirs(output_dir, exist_ok=True)
+
+# Inference on a few samples from the dataset
+model.eval()
+with torch.no_grad():
+    for images, _ in dataloader:
+        images = [image.to(device) for image in images]
+        detections = model(images)
+
+        for i, image in enumerate(images):
+            # Convert back to numpy for OpenCV processing
+            image_np = image.cpu().numpy().transpose((1, 2, 0))
+            image_np = (image_np * 255).astype(np.uint8)
+
+            # Draw bounding boxes (this is just illustrative, adapt as needed)
+            for detection in detections[i]['boxes']:
+                startX, startY, endX, endY = detection.cpu().numpy().astype(int)
+                cv2.rectangle(image_np, (startX, startY), (endX, endY), (0, 255, 0), 2)
+
+            # Save the output image
+            output_path = os.path.join(output_dir, f"output_image_{i}.jpg")
+            cv2.imwrite(output_path, image_np)
+            print(f"Saved detection output to {output_path}")
+
+# Clean up any open windows (if applicable)
+cv2.destroyAllWindows()
